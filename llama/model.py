@@ -483,3 +483,49 @@ class Transformer(nn.Module):
         h = self.norm(h)
         output = self.output(h).float()
         return output
+
+class AuxModel(nn.Module):
+    def __init__(self, base_clf, vocab_size=32000):
+        """
+        Given a base classifier model, previous tokens, and a label,
+        this model will get the probability of the label
+        given the previous tokens
+        by enumerating all possible next token.
+        
+        Args:
+            base_clf (nn.Module): The base classifier model.
+            vocab_size (int): The size of the vocabulary.
+        """
+        self.base_clf = base_clf
+        self.vocab_size = vocab_size
+        
+    @torch.inference_mode()
+    def forward(self, tokens, label_wanted, top_indices=None):
+        """
+        Perform a forward pass through the AuxModel.
+
+        Args:
+            tokens (torch.Tensor): Input token indices.
+            label_wanted (int): The label to get the probability of.
+            top_indices (torch.Tensor, optional): The top tokens to focus on. Defaults to None.
+        Returns:
+            torch.Tensor: Output probs after applying the AuxModel.
+        """
+        bsz, seqlen = tokens.shape
+        self.base_clf.eval()
+        # Get all possible next tokens
+        to_search = torch.ones(bsz, self.vocab_size) @ torch.arange(self.vocab_size, device=tokens.device)
+        if top_indices is not None:
+            to_search = top_indices
+        probs = torch.zeros(bsz, len(top_indices), device=tokens.device)
+        with torch.no_grad():
+            for next_token in to_search:
+                new_tokens = torch.zeros(bsz, seqlen + 1, dtype=tokens.dtype, device=tokens.device) # (bsz, seqlen + 1)
+                new_tokens[:, :-1] = tokens # (bsz, seqlen)
+                new_tokens[:, -1] = next_token # (bsz)
+                logits = self.base_clf(new_tokens) # (bsz, num_labels)
+                
+                logits = torch.softmax(logits, dim=-1) # (bsz, num_labels)
+                logits = logits[:, label_wanted] # (bsz)
+                probs[:, next_token] = logits # (bsz)
+        return probs
